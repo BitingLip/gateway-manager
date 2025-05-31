@@ -33,6 +33,51 @@ class GatewayManagerSettings:
     @property
     def cors_origins(self):
         return self.config.cors_origins
+    
+    @property
+    def celery_broker_url(self):
+        """Celery broker URL - default to Redis"""
+        return getattr(self.config, 'celery_broker_url', 'redis://localhost:6379/0')
+    
+    @property
+    def celery_result_backend(self):
+        """Celery result backend - default to Redis"""
+        return getattr(self.config, 'celery_result_backend', 'redis://localhost:6379/0')
+    
+    @property
+    def redis_url(self):
+        """Redis URL for caching and task queue"""
+        return getattr(self.config, 'redis_url', 'redis://localhost:6379/0')
+    
+    @property 
+    def celery_task_serializer(self):
+        """Celery task serializer"""
+        return getattr(self.config, 'celery_task_serializer', 'json')
+    
+    @property
+    def celery_result_serializer(self):
+        """Celery result serializer"""
+        return getattr(self.config, 'celery_result_serializer', 'json')
+    
+    @property
+    def celery_accept_content(self):
+        """Celery accepted content types"""
+        return getattr(self.config, 'celery_accept_content', ['json'])
+    
+    @property
+    def celery_timezone(self):
+        """Celery timezone"""
+        return getattr(self.config, 'celery_timezone', 'UTC')
+    
+    @property
+    def celery_enable_utc(self):
+        """Celery enable UTC"""
+        return getattr(self.config, 'celery_enable_utc', True)
+    
+    @property
+    def celery_task_track_started(self):
+        """Celery track task started"""
+        return getattr(self.config, 'celery_task_track_started', True)
 
 def get_settings():
     """Get gateway manager settings instance"""
