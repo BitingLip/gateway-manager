@@ -26,15 +26,25 @@ from app.model_routes import model_router
 from app.services.model_service import ModelManagementService
 from app.services.service_proxy import service_proxy
 
+# Database models and services
+from app.models.database import DatabaseManager
+from app.models.api_request import APIRequestService
+from app.models.auth import AuthenticationService
+from app.models.rate_limit import RateLimitService
+from app.models.security import SecurityService
+
 # New integrated routes
 from app.routes.integrated_models import integrated_model_router
 from app.routes.integrated_tasks import integrated_task_router
 from app.routes.integrated_cluster import integrated_cluster_router
 from app.routes.integrated_system import integrated_system_router, api_health_router
 
+# Admin management routes  
+from app.routes.admin import router as admin_router
+
 # Startup logging for API key configuration
 logging.basicConfig(level=logging.INFO) 
-startup_logger = logging.getLogger(__name__ + ".startup_auth_check")
+startup_logger = logging.getLogger(f"{__name__}.startup_auth_check")
 startup_logger.info(f"Auth Check at Startup: settings.api_key = '{settings.api_key}' (type: {type(settings.api_key)})")
 if settings.api_key == "":
     startup_logger.warning("Auth Check at Startup: settings.api_key is an empty string. Treating as NO API key.")
@@ -46,6 +56,18 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
     logger.info("Starting GPU Cluster API Gateway", version="1.0.0", api_key_configured=bool(settings.api_key))
+    
+    # Initialize database manager
+    db_manager = DatabaseManager()
+    await db_manager.initialize()
+    app.state.db_manager = db_manager
+    logger.info("Database manager initialized")
+      # Initialize database models
+    app.state.api_request_service = APIRequestService(db_manager)
+    app.state.auth_service = AuthenticationService(db_manager)
+    app.state.rate_limit_service = RateLimitService(db_manager)
+    app.state.security_service = SecurityService(db_manager)
+    logger.info("Database models initialized")
     
     # Initialize model management service (legacy)
     model_service = ModelManagementService()
@@ -63,6 +85,11 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Cleanup database models
+    if hasattr(app.state, 'db_manager'):
+        await app.state.db_manager.close()
+        logger.info("Database manager cleaned up")
+    
     # Cleanup model service
     if hasattr(app.state, 'model_service'):
         await app.state.model_service.cleanup()
@@ -76,21 +103,6 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down GPU Cluster API Gateway")
 
 
-async def log_requests(request: Request, call_next):
-    """Request logging middleware"""
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-    
-    logger.info(
-        "Request processed",
-        method=request.method,
-        url=str(request.url),
-        status_code=response.status_code,        process_time=process_time
-    )
-    return response
-
-
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
     # Setup logging
@@ -102,8 +114,10 @@ def create_app() -> FastAPI:
     else:
         logger.info("API Authentication: DISABLED. 'verify_api_key_if_configured' will allow all requests.", api_key_configured=False)
 
-    app_description = "REST API for AMD GPU cluster task submission and management. "
-    app_description += "API key authentication is ENABLED and REQUIRED if an API_KEY is set in the environment." if settings.api_key else "API key authentication is DISABLED (open access)."
+    app_description = (
+        "REST API for AMD GPU cluster task submission and management. "
+        + ("API key authentication is ENABLED and REQUIRED if an API_KEY is set in the environment." if settings.api_key else "API key authentication is DISABLED (open access).")
+    )
 
     app = FastAPI(
         title="BitingLip GPU Cluster API Gateway",
@@ -121,8 +135,29 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-    )    # Add request logging middleware
-    app.middleware("http")(log_requests)    # Register routes (health routes don't need auth)
+    )
+
+    # Middleware will be added after database initialization via startup event    @app.on_event("startup")
+    async def setup_middleware():
+        """Setup middleware after database models are initialized"""
+        try:
+            # Get service instances from app state
+            api_request_service = app.state.api_request_service
+            auth_service = app.state.auth_service
+            rate_limit_service = app.state.rate_limit_service
+            security_service = app.state.security_service
+            
+            # Add our enhanced middleware stack (order matters!)
+            # Note: Using a simple request logging for now until middleware integration is fixed
+            app.middleware("http")(create_enhanced_logging_middleware(api_request_service))
+            
+            logger.info("Enhanced middleware stack initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize middleware: {e}")
+            # Fall back to basic logging
+            app.middleware("http")(basic_log_requests)
+
+    # Register routes (health routes don't need auth)
     app.include_router(health.router)
     
     # Legacy protected routes (keep for backward compatibility)
@@ -139,8 +174,101 @@ def create_app() -> FastAPI:
     app.include_router(integrated_model_router)   # /api/models/*
     app.include_router(integrated_task_router)    # /api/tasks/*
     app.include_router(integrated_cluster_router) # /api/workers/*
+    
+    # Admin management routes (protected)
+    app.include_router(admin_router)              # /admin/* (management interface)
 
     return app
+
+
+def create_enhanced_logging_middleware(api_request_service):
+    """Create enhanced request logging middleware with database persistence"""
+    async def enhanced_log_requests(request: Request, call_next):
+        start_time = time.time()
+        
+        # Start request logging
+        request_id = None
+        try:
+            request_id = await api_request_service.start_request(
+                method=request.method,
+                path=request.url.path,
+                query_params=dict(request.query_params),
+                headers=dict(request.headers),
+                client_ip=request.client.host if request.client else "unknown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to start request logging: {e}")
+        
+        # Process request
+        try:
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            
+            # Complete request logging
+            if request_id:
+                try:
+                    await api_request_service.complete_request(
+                        request_id=request_id,
+                        status_code=response.status_code,
+                        response_time_ms=int(process_time * 1000)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to complete request logging: {e}")
+            
+            # Basic logging
+            logger.info(
+                "Request processed",
+                method=request.method,
+                url=str(request.url),
+                status_code=response.status_code,
+                process_time=process_time,
+                request_id=request_id
+            )
+            
+            return response
+            
+        except Exception as e:
+            process_time = time.time() - start_time
+            
+            # Log error
+            if request_id:
+                try:
+                    await api_request_service.complete_request(
+                        request_id=request_id,
+                        status_code=500,
+                        response_time_ms=int(process_time * 1000),
+                        error_message=str(e)
+                    )
+                except Exception as log_e:
+                    logger.warning(f"Failed to complete error request logging: {log_e}")
+            
+            logger.error(
+                "Request failed",
+                method=request.method,
+                url=str(request.url),
+                error=str(e),
+                process_time=process_time,
+                request_id=request_id
+            )
+            raise
+    
+    return enhanced_log_requests
+
+
+async def basic_log_requests(request: Request, call_next):
+    """Basic request logging middleware (fallback)"""
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    logger.info(
+        "Request processed",
+        method=request.method,
+        url=str(request.url),
+        status_code=response.status_code,
+        process_time=process_time
+    )
+    return response
 
 
 # Create app instance
