@@ -56,9 +56,8 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan management"""
     logger.info("Starting GPU Cluster API Gateway", version="1.0.0", api_key_configured=bool(settings.api_key))
-    
-    # Initialize database manager
-    db_manager = DatabaseManager()
+      # Initialize database manager (use global instance)
+    from app.models.database import db_manager
     await db_manager.initialize()
     app.state.db_manager = db_manager
     logger.info("Database manager initialized")

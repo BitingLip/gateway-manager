@@ -14,9 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 async def test_api_key_creation():
     """Test creating an API key via the HTTP endpoint"""
-    
-    # Gateway Manager admin API endpoint
-    base_url = "http://localhost:8000"
+      # Gateway Manager admin API endpoint
+    base_url = "http://localhost:8080"
     admin_url = f"{base_url}/admin"
     
     # API key creation request

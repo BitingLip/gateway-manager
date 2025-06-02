@@ -54,6 +54,17 @@ class SecurityIncidentResponse(BaseModel):
     created_at: datetime
 
 
+class BlockIPRequest(BaseModel):
+    ip_address: str = Field(..., description="IP address to block")
+    reason: str = Field(..., description="Reason for blocking")
+    duration_hours: Optional[int] = Field(None, description="Block duration in hours")
+
+
+class UnblockIPRequest(BaseModel):
+    ip_address: str = Field(..., description="IP address to unblock")
+    reason: str = Field(..., description="Reason for unblocking")
+
+
 # Dependency to get services
 async def get_auth_service(db: DatabaseManager = Depends(get_db)) -> AuthenticationService:
     return AuthenticationService(db)
@@ -319,17 +330,15 @@ async def resolve_security_incident(
 
 @router.post("/security/block-ip")
 async def block_ip_address(
-    ip_address: str = Field(..., description="IP address to block"),
-    reason: str = Field(..., description="Reason for blocking"),
-    duration_hours: Optional[int] = Field(None, description="Block duration in hours"),
+    request: BlockIPRequest,
     security_service: SecurityService = Depends(get_security_service)
 ):
     """Block an IP address"""
     try:
         success = await security_service.block_ip(
-            ip_address=ip_address,
-            reason=reason,
-            duration_hours=duration_hours,
+            ip_address=request.ip_address,
+            reason=request.reason,
+            duration_hours=request.duration_hours,
             blocked_by="admin"  # TODO: Get from authenticated user
         )
         
@@ -339,7 +348,7 @@ async def block_ip_address(
                 detail="Failed to block IP address"
             )
             
-        return {"message": f"IP address {ip_address} blocked successfully"}
+        return {"message": f"IP address {request.ip_address} blocked successfully"}
         
     except HTTPException:
         raise
@@ -351,15 +360,15 @@ async def block_ip_address(
         )
 
 
-@router.delete("/security/block-ip/{ip_address}")
+@router.delete("/security/block-ip")
 async def unblock_ip_address(
-    ip_address: str,
+    request: UnblockIPRequest,
     security_service: SecurityService = Depends(get_security_service)
 ):
     """Unblock an IP address"""
     try:
         success = await security_service.unblock_ip(
-            ip_address=ip_address,
+            ip_address=request.ip_address,
             unblocked_by="admin"  # TODO: Get from authenticated user
         )
         
@@ -369,7 +378,7 @@ async def unblock_ip_address(
                 detail="IP address not found in blocklist"
             )
             
-        return {"message": f"IP address {ip_address} unblocked successfully"}
+        return {"message": f"IP address {request.ip_address} unblocked successfully"}
         
     except HTTPException:
         raise
@@ -409,32 +418,20 @@ async def get_request_analytics(
 @router.get("/health")
 async def admin_health_check():
     """Health check endpoint for admin API"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow(),
-        "service": "gateway-manager-admin"
-    }
+    try:
+        # Get basic health status
+        health_status = "healthy"
         
-        # Check for high error rates
-        if request_stats.get('total_requests', 0) > 0:
-            error_rate = (request_stats.get('server_errors', 0) + 
-                         request_stats.get('client_errors', 0)) / request_stats['total_requests']
-            if error_rate > 0.1:  # 10% error rate
-                health_status = "degraded"
-        
-        # Check for critical security incidents
-        critical_incidents = security_summary.get('incidents_by_severity', {}).get('critical', 0)
-        if critical_incidents > 0:
-            health_status = "unhealthy"
+        # In a full implementation, you would check:
+        # - Database connectivity
+        # - Service dependencies
+        # - Resource usage
+        # - Error rates
         
         return {
             "status": health_status,
             "timestamp": datetime.utcnow(),
-            "metrics": {
-                "requests": request_stats,
-                "rate_limits": rate_limit_stats,
-                "security": security_summary
-            }
+            "service": "gateway-manager-admin"
         }
         
     except Exception as e:
